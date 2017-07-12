@@ -14,6 +14,7 @@ from oauth2client import client, file
 # Slack @music_share bot constants
 BOT_ID = os.environ.get("BOT_ID")
 AT_BOT = "<@" + BOT_ID + ">"
+# TODO: Handle 'rate' commands (currently 'share' only). Read from the spreadsheet by URL?
 EXAMPLE_COMMANDS = ["share", "rate"]
 
 # Spotify Creds
