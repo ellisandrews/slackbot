@@ -206,10 +206,20 @@ if __name__ == "__main__":
 
     if sc.rtm_connect():
         print "music_share bot connected and running!"
+
         # initialize Spotify
         spotify = spotipy.Spotify(auth=get_spotify_token())
+
+        # Spotify token expires after an hour, keep track of the time
+        start = time.time()
         while True:
+            runtime = time.time() - start
+            # If it's been close to an hour, get new Spotify token and reset the start time
+            if runtime > 3300:
+                spotify = spotipy.Spotify(auth=get_spotify_token())
+                start = time.time()
             main(spotify)
             time.sleep(READ_WEBSOCKET_DELAY)
+
     else:
         print "Connection failed. Invalid Slack token or bot ID?"
