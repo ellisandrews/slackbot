@@ -11,10 +11,15 @@ from googleapiclient import discovery
 from oauth2client import client, file
 
 
+# TODO: Add which Slack user inputted data
+# TODO: Allow user to specify a sheet to append to
+# TODO: Only allow me to use 'rate' command
+# TODO: Apple Music API?
+
+
 # Slack @music_share bot constants
 BOT_ID = os.environ.get("BOT_ID")
 AT_BOT = "<@" + BOT_ID + ">"
-# TODO: Handle 'rate' commands (currently 'share' only). Read from the spreadsheet by URL?
 EXAMPLE_COMMANDS = ["share", "rate"]
 
 # Spotify Creds
@@ -48,25 +53,24 @@ def is_valid_command(command):
     """
     Receives messages directed at the Slack bot and returns True if they are valid commands, False otherwise.
     """
-    if command.startswith(EXAMPLE_COMMANDS[0]) or command.startswith(EXAMPLE_COMMANDS[1]) \
-            and 'https://open.spotify.com/' in command:
+    if command.startswith(EXAMPLE_COMMANDS[0]) or command.startswith(EXAMPLE_COMMANDS[1]) and 'https://open.spotify.com/' in command:
         return True
     else:
         return False
 
 
-def add_reaction(output, reaction):
+def add_reaction(rtm_output, reaction):
     """
     Adds emoji reactions (as @music_share user) to messages directed at the Slack bot.
     """
-    sc.api_call('reactions.add', name=reaction, channel=output['channel'], timestamp=output['ts'])
+    sc.api_call('reactions.add', name=reaction, channel=rtm_output['channel'], timestamp=rtm_output['ts'])
 
 
-def get_url(output):
+def get_url(rtm_output):
     """
     Parses Slack message text and returns the Spotify URL.
     """
-    words = output['text'].split()
+    words = rtm_output['text'].split()
     raw_url = [word for word in words if 'https://open.spotify.com/' in word]
     url = raw_url[0].lstrip('<').rstrip('>')
     return url
@@ -113,32 +117,19 @@ def get_google_credentials():
     return credentials
 
 
-# def get_service():
-#     """Returns an authorised sheets API service? This has not been tested."""
-#     credentials = get_google_credentials()
-#     http = httplib2.Http()
-#     http = credentials.authorize(http)
-#     service = discovery.build('sheets', 'v4', http=http)
-#
-#     return service
+def get_google_service():
+    credentials = get_google_credentials()
+    service = discovery.build('sheets', 'v4', credentials=credentials)
+    return service
 
 
-def update_spreadsheet(title, artists, url, rating=""):
+def update_spreadsheet(service, title, artists, url):
     """
     Appends a row to the Google spreadsheet with the new track data.
     """
-    credentials = get_google_credentials()
-
-    service = discovery.build('sheets', 'v4', credentials=credentials)
 
     # Cell range to look for existing table to which to append rows
     range_ = 'Charlotte_Recs!A1:F1'
-
-    # How the input data should be interpreted.
-    value_input_option = 'USER_ENTERED'
-
-    # How the input data should be inserted.
-    insert_data_option = 'INSERT_ROWS'
 
     # List track artist(s) in a single comma-separated string
     artists = ', '.join(artists)
@@ -146,16 +137,64 @@ def update_spreadsheet(title, artists, url, rating=""):
     value_range_body = {
         'majorDimension': 'ROWS',
         'values': [
-            [datetime.date.today().strftime("%-m/%-d/%Y"), title, artists, url, rating]
+            [datetime.date.today().strftime("%-m/%-d/%Y"), title, artists, url, ""]
         ]
     }
 
     request = service.spreadsheets().values().append(spreadsheetId=SPREADSHEET_ID, range=range_,
-                                                     valueInputOption=value_input_option,
-                                                     insertDataOption=insert_data_option, body=value_range_body)
+                                                     valueInputOption='USER_ENTERED',insertDataOption='INSERT_ROWS',
+                                                     body=value_range_body)
     response = request.execute()
 
     return response
+
+
+def verify_rating(rating):
+    """
+    Checks to see that user entered a valid rating when using the 'rate' command.
+    """
+    try:
+        rating = float(rating)
+        if 0 <= rating <= 10:
+            return True, rating
+        else:
+            return False, None
+    except ValueError:
+            return False, None
+
+
+def add_rating(service, url, rating):
+    """
+    Adds (or updates) a rating for an existing track in the spreadsheet.
+    """
+
+    # First, read from the spreadsheet to figure out where to post the rating
+    url_column = 'Charlotte_Recs!D:D'  # Column in which to look for URL in existing table
+    request = service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range=url_column)
+    response = request.execute()
+
+    # Find the appropriate row number
+    row = 0
+    for cell in response['values']:
+        row += 1
+        if cell[0] == url:
+            break
+
+    # Insert the rating to the spreadsheet
+    rating_cell = 'Charlotte_Recs!E{0}'.format(row)
+    value = {'values': [[rating]]}
+    request = service.spreadsheets().values().update(spreadsheetId=SPREADSHEET_ID, range=rating_cell,
+                                                     valueInputOption='USER_ENTERED', body=value)
+    response = request.execute()
+
+    return response
+
+
+def respond_to_user(rtm_output, message):
+    """
+    Sends a slack message as the bot to the user in the channel in which they messaged the bot.
+    """
+    sc.api_call("chat.postMessage", channel=rtm_output['channel'], text=message, as_user=True)
 
 
 def main(sp):
@@ -172,6 +211,7 @@ def main(sp):
         message = bot_output['text'].split(AT_BOT)[1].strip().lower()
         command = message.split()[0]  # command is either 'share' or 'rate' depending on the Slack message
 
+        # Verify that the user sent a valid command to @music_share
         if is_valid_command(message):
             # @music_share bot adds an emoji to Slack message sharing the track
             add_reaction(bot_output, 'notes')
@@ -185,20 +225,42 @@ def main(sp):
             # Grab the track title and artist(s)
             title, artists = parse_track(track)
 
-            # Hit Google Sheets API and insert new song data
-            r = update_spreadsheet(title, artists, url)
-            rows = r['updates']['updatedRows']
-            sheet = r['tableRange'].split('!')[0]
+            # Get Google service for API requests
+            service = get_google_service()
 
-            # Respond to the user in Slack
-            response = "Successfully appended {0} row(s) to '{1}' sheet!".format(rows, sheet)
-            sc.api_call("chat.postMessage", channel=bot_output['channel'], text=response, as_user=True)
+            # Handle 'rate' command
+            if command == 'rate':
+                rating = message.split()[1]
+                valid, rating = verify_rating(rating)
+                if valid:
+                    r = add_rating(service, url, rating)
+                    if r['updatedCells'] > 0:
+                        response = "Successfully added rating for {0} to sheet!".format(title)
+                    else:
+                        response = "Failed to add rating for {0} to sheet :disappointed:".format(title)
+                    respond_to_user(bot_output, response)
+                else:
+                    # If invalid rating in the Slack message, respond to the user letting them know
+                    response = "Not a valid rating. Rating must be a number between 1 and 10 (floats allowed)!"
+                    respond_to_user(bot_output, response)
+
+            # Handle 'share' command
+            else:
+                # Hit Google Sheets API and insert new song data
+                r = update_spreadsheet(service, title, artists, url)
+                rows = r['updates']['updatedRows']
+                sheet = r['tableRange'].split('!')[0]
+                if rows > 0:
+                    response = "Successfully appended {0} row(s) to {1} sheet!".format(rows, sheet)
+                else:
+                    response = "Failed to append row(s) to {0} sheet :disappointed:".format(sheet)
+                respond_to_user(bot_output, response)
 
         else:
             # If invalid command in the Slack message, respond to the user letting them know
             response = "Not sure what you mean. Use either the *{0}* or *{1}* command with a Spotify link.".format(
                 EXAMPLE_COMMANDS[0], EXAMPLE_COMMANDS[1])
-            sc.api_call("chat.postMessage", channel=bot_output['channel'], text=response, as_user=True)
+            respond_to_user(bot_output, response)
 
 
 if __name__ == "__main__":
@@ -208,7 +270,7 @@ if __name__ == "__main__":
     if sc.rtm_connect():
         print "music_share bot connected and running!"
 
-        # initialize Spotify
+        # Initialize Spotify
         spotify = spotipy.Spotify(auth=get_spotify_token())
 
         # Spotify token expires after an hour, keep track of the time
