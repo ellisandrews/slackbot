@@ -9,6 +9,7 @@ import spotipy
 from slackclient import SlackClient
 from googleapiclient import discovery
 from oauth2client import client, file
+from pprint import pprint
 
 
 # TODO: Add which Slack user inputted data
@@ -21,6 +22,7 @@ from oauth2client import client, file
 BOT_ID = os.environ.get("BOT_ID")
 AT_BOT = "<@" + BOT_ID + ">"
 EXAMPLE_COMMANDS = ["share", "rate"]
+VALID_USERS = ["ellis", "charlotte"]
 
 # Spotify Creds
 CLIENT_ID = os.environ.get("CLIENT_ID")
@@ -194,78 +196,136 @@ def respond_to_user(rtm_output, message):
     """
     Sends a slack message as the bot to the user in the channel in which they messaged the bot.
     """
-    sc.api_call("chat.postMessage", channel=rtm_output['channel'], text=message, as_user=True)
+    sc.api_call('chat.postMessage', channel=rtm_output['channel'], text=message, as_user=True)
+
+
+def get_user_name(bot_output):
+    user_id = bot_output['user']
+    response = sc.api_call('users.info', user=user_id)
+    if response['ok']:
+        return response['user']['name']
+    else:
+        raise ValueError('Slack API call for user name failed')
+
+
+def user_validation(user_name):
+    if user_name not in VALID_USERS:
+        return False, "Hey {name}! You're not a user I recognize. Nice to meet you! Hit up you're boi to get credentialed :money_mouth_face:".format(name=user_name.title())
+    else:
+        return True, "Hey {name}! Thanks for the message :slightly_smiling_face:".format(name=user_name.title())
+
+
+def handle_rate_command(bot_output, message, google_service, track_url, track):
+    """
+    DOCTSTING
+    """
+    # Grab the track title and artist(s)
+    title, artists = parse_track(track)
+
+    # Get user specified track rating
+    rating = message.split()[1]
+
+    # Verify that the user entered a valid rating
+    valid, rating = verify_rating(rating)
+
+    # Add valid ratings to the spreadsheet and respond to the user appropriately
+    if valid:
+        r = add_rating(google_service, track_url, rating)
+        if r['updatedCells'] > 0:
+            response = "Successfully added rating for {0} to sheet!".format(title)
+        else:
+            response = "Failed to add rating for {0} to sheet :disappointed:".format(title)
+        respond_to_user(bot_output, response)
+    else:
+        # If invalid rating in the Slack message, respond to the user letting them know
+        response = "Not a valid rating. Rating must be a number between 1 and 10 (floats allowed)!"
+        respond_to_user(bot_output, response)
+
+
+def handle_share_command(bot_output, google_service, track_url, track):
+
+    # Grab the track title and artist(s)
+    title, artists = parse_track(track)
+
+    # Hit Google Sheets API and insert new song data
+    r = update_spreadsheet(google_service, title, artists, track_url)
+
+    rows = r['updates']['updatedRows']
+    sheet = r['tableRange'].split('!')[0]
+    if rows > 0:
+        response = "Successfully appended {0} row(s) to {1} sheet!".format(rows, sheet)
+    else:
+        response = "Failed to append row(s) to {0} sheet :disappointed:".format(sheet)
+    respond_to_user(bot_output, response)
 
 
 def main(sp):
     """
     Does the stuff.
     """
+    # Listen to the Slack output
     rtm_output = sc.rtm_read()
+    # Only grab RTM output that is directed at the bot
     bot_output = parse_rtm_output(rtm_output)
 
-    # bot_output == None if there aren't messages directed at the bot
+    # bot_output is None if there aren't messages directed at the bot
     if bot_output:
 
-        # This is just the message string after '@music_share' in Slack message
-        message = bot_output['text'].split(AT_BOT)[1].strip().lower()
-        command = message.split()[0]  # command is either 'share' or 'rate' depending on the Slack message
+        #  Sample bot_output:
+        #  {'channel': 'G65LB3LHJ',
+        #   'source_team': 'T028G9BR3',
+        #   'team': 'T028G9BR3',
+        #   'text': "<@U66DH1L87> what's up?",
+        #   'ts': '1503871906.000068',
+        #   'type': 'message',
+        #   'user': 'U1ESNAR42'}
 
-        # Verify that the user sent a valid command to @music_share
-        if is_valid_command(message):
-            # @music_share bot adds an emoji to Slack message sharing the track
-            add_reaction(bot_output, 'notes')
+        # Only accept input from known users
+        user_name = get_user_name(bot_output)
+        is_valid_user, response = user_validation(user_name)
+        respond_to_user(bot_output, response)
 
-            # Get Spotify track URL shared via Slack
-            url = get_url(bot_output)
+        # is_valid_user is False if the user isn't in VALID_USERS list
+        if is_valid_user:
 
-            # Get track data from the Spotify API
-            track = sp.track(url)
+            # This is just the message string after '@music_share' in Slack message
+            message = bot_output['text'].split(AT_BOT)[1].strip().lower()
+            command = message.split()[0]  # command is either 'share' or 'rate' depending on the Slack message
 
-            # Grab the track title and artist(s)
-            title, artists = parse_track(track)
+            # Verify that the user sent a valid command to @music_share
+            if is_valid_command(message):
+                # @music_share bot adds an emoji to Slack message containing the track
+                add_reaction(bot_output, 'notes')
 
-            # Get Google service for API requests
-            service = get_google_service()
+                # Get Spotify track URL shared via Slack
+                url = get_url(bot_output)
 
-            # Handle 'rate' command
-            if command == 'rate':
-                rating = message.split()[1]
-                valid, rating = verify_rating(rating)
-                if valid:
-                    r = add_rating(service, url, rating)
-                    if r['updatedCells'] > 0:
-                        response = "Successfully added rating for {0} to sheet!".format(title)
+                # Get track data from the Spotify API
+                track = sp.track(url)
+
+                # Get Google service for API requests
+                service = get_google_service()
+
+                # Handle 'rate' and 'share' user-specified commands
+                if command == 'rate':
+                    if user_name == "ellis":
+                        handle_rate_command(bot_output, message, service, url, track)
                     else:
-                        response = "Failed to add rating for {0} to sheet :disappointed:".format(title)
-                    respond_to_user(bot_output, response)
+                        response = "Only you're boi can rate tracks, silly!"
+                        respond_to_user(bot_output, response)
                 else:
-                    # If invalid rating in the Slack message, respond to the user letting them know
-                    response = "Not a valid rating. Rating must be a number between 1 and 10 (floats allowed)!"
-                    respond_to_user(bot_output, response)
+                    handle_share_command(bot_output, service, url, track)
 
-            # Handle 'share' command
-            else:
-                # Hit Google Sheets API and insert new song data
-                r = update_spreadsheet(service, title, artists, url)
-                rows = r['updates']['updatedRows']
-                sheet = r['tableRange'].split('!')[0]
-                if rows > 0:
-                    response = "Successfully appended {0} row(s) to {1} sheet!".format(rows, sheet)
-                else:
-                    response = "Failed to append row(s) to {0} sheet :disappointed:".format(sheet)
-                respond_to_user(bot_output, response)
-
-        else:
             # If invalid command in the Slack message, respond to the user letting them know
-            response = "Not sure what you mean. Use either the *{0}* or *{1}* command with a Spotify link.".format(
-                EXAMPLE_COMMANDS[0], EXAMPLE_COMMANDS[1])
-            respond_to_user(bot_output, response)
+            else:
+                response = "Not sure what you mean. Use either the *{0}* or *{1}* command with a Spotify link.".format(
+                    EXAMPLE_COMMANDS[0], EXAMPLE_COMMANDS[1])
+                respond_to_user(bot_output, response)
 
 
 if __name__ == "__main__":
 
-    READ_WEBSOCKET_DELAY = 1  # 1 second delay between reading from the Slack RTM firehose
+    read_websocket_delay = 1  # 1 second delay between reading from the Slack RTM firehose
 
     if sc.rtm_connect():
         print "music_share bot connected and running!"
@@ -282,7 +342,7 @@ if __name__ == "__main__":
                 spotify = spotipy.Spotify(auth=get_spotify_token())
                 start = time.time()
             main(spotify)
-            time.sleep(READ_WEBSOCKET_DELAY)
+            time.sleep(read_websocket_delay)
 
     else:
         print "Connection failed. Invalid Slack token or bot ID?"
