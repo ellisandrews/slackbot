@@ -14,7 +14,6 @@ from pprint import pprint
 
 # TODO: Add which Slack user inputted data
 # TODO: Allow user to specify a sheet to append to
-# TODO: Only allow me to use 'rate' command
 # TODO: Apple Music API?
 
 
@@ -55,7 +54,7 @@ def is_valid_command(command):
     """
     Receives messages directed at the Slack bot and returns True if they are valid commands, False otherwise.
     """
-    if command.startswith(EXAMPLE_COMMANDS[0]) or command.startswith(EXAMPLE_COMMANDS[1]) and 'https://open.spotify.com/' in command:
+    if (command.startswith(EXAMPLE_COMMANDS[0]) or command.startswith(EXAMPLE_COMMANDS[1])) and 'https://open.spotify.com/' in command:
         return True
     else:
         return False
@@ -162,7 +161,7 @@ def verify_rating(rating):
         else:
             return False, None
     except ValueError:
-            return False, None
+        return False, None
 
 
 def add_rating(service, url, rating):
@@ -209,16 +208,11 @@ def get_user_name(bot_output):
 
 
 def user_validation(user_name):
-    if user_name not in VALID_USERS:
-        return False, "Hey {name}! You're not a user I recognize. Nice to meet you! Hit up you're boi to get credentialed :money_mouth_face:".format(name=user_name.title())
-    else:
-        return True, "Hey {name}! Thanks for the message :slightly_smiling_face:".format(name=user_name.title())
+    return user_name in VALID_USERS
 
 
 def handle_rate_command(bot_output, message, google_service, track_url, track):
-    """
-    DOCTSTING
-    """
+
     # Grab the track title and artist(s)
     title, artists = parse_track(track)
 
@@ -282,10 +276,8 @@ def main(sp):
 
         # Only accept input from known users
         user_name = get_user_name(bot_output)
-        is_valid_user, response = user_validation(user_name)
-        respond_to_user(bot_output, response)
+        is_valid_user = user_validation(user_name)
 
-        # is_valid_user is False if the user isn't in VALID_USERS list
         if is_valid_user:
 
             # This is just the message string after '@music_share' in Slack message
@@ -311,7 +303,7 @@ def main(sp):
                     if user_name == "ellis":
                         handle_rate_command(bot_output, message, service, url, track)
                     else:
-                        response = "Only you're boi can rate tracks, silly!"
+                        response = "Only *you're boi* can rate tracks, silly!"
                         respond_to_user(bot_output, response)
                 else:
                     handle_share_command(bot_output, service, url, track)
@@ -321,6 +313,11 @@ def main(sp):
                 response = "Not sure what you mean. Use either the *{0}* or *{1}* command with a Spotify link.".format(
                     EXAMPLE_COMMANDS[0], EXAMPLE_COMMANDS[1])
                 respond_to_user(bot_output, response)
+
+        # If user is invalid, respond to the user
+        else:
+            response = "Hey {name}! You're not a user I recognize. Hit up *you're boi* to get credentialed :money_mouth_face:".format(name=user_name.title())
+            respond_to_user(bot_output, response)
 
 
 if __name__ == "__main__":
